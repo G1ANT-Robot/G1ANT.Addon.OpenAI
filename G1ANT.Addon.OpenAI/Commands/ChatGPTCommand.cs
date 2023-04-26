@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using G1ANT.Language;
 using Newtonsoft.Json;
 using System.Net.Http.Formatting;
+using Newtonsoft.Json.Linq;
 
 namespace G1ANT.Addon.OpenAI.Commands
 {
@@ -20,6 +21,9 @@ namespace G1ANT.Addon.OpenAI.Commands
             [Argument(Tooltip = "Prompt for ChatGPT", Required = true)]
             public TextStructure Prompt { get; set; }
 
+            [Argument(Tooltip = "Default 1. Range between 0 - 2.  will make the output more random, lower values will make it more focused and deterministic.", Required = true)]
+            public IntegerStructure Temperature { get; set; } = new IntegerStructure(1);
+
             [Argument(Tooltip = "If set to true, full JSON response will be returned. If false, only message content will be returned")]
             public BooleanStructure ReturnJson { get; set; } = new BooleanStructure(false);
 
@@ -33,59 +37,51 @@ namespace G1ANT.Addon.OpenAI.Commands
 
         public void Execute(Arguments arguments)
         {
-            var model = "gpt - 3.5 - turbo";
-            var token = arguments.ApiKey.Value;
-            var requestBodyModel = "";
+            var model = "gpt-3.5-turbo";
+            var apiKey = arguments.ApiKey.Value;
+            var prompt = arguments.Prompt.Value;
+            var temperature = arguments.Temperature.Value;
 
-            var requestBodyJson = JsonConvert.SerializeObject(requestBodyModel);
-            var requestContent = new StringContent(requestBodyJson);
-            
+            var chatResponse = ChatGPT(apiKey, prompt, model, temperature);
+            var jsonChatResponse = JObject.Parse(chatResponse);
+            JToken messageToken = jsonChatResponse["choices"][0]["message"]["content"];
+            string messageJson = messageToken.ToString();
 
-
+            if (arguments.ReturnJson.Value)
+                Scripter.Variables.SetVariableValue(arguments.Result.Value, new JsonStructure(jsonChatResponse));
+            else
+                Scripter.Variables.SetVariableValue(arguments.Result.Value, new TextStructure(messageJson));
 
         }
 
-        static async Task ChatGPT(string token, string requestContent)
+        static string ChatGPT(string apiKey, string content, string model, int temperature = 1)
         {
             var messages = new List<GptMessage>
             {
-                new GptMessage { Role = "user", Content = "Hello!" }
+                new GptMessage { Role = "user", Content = content }
             };
 
             var jsonModel = new GptJsonModel
             {
-                Model = "gpt-3.5-turbo",
+                Model = model,
                 Messages = messages
             };
+
+            string formattedJson = "";
 
             using (var client = new HttpClient())
             {
                 client.BaseAddress = new Uri("https://api.openai.com/");
                 client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-
-                string apiKey = token;
                 client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
-                HttpResponseMessage response = await client.PostAsJsonAsync("v1/chat/completions", jsonModel);
+                HttpResponseMessage response = client.PostAsJsonAsync("v1/chat/completions", jsonModel).Result;
 
-                if (response.IsSuccessStatusCode)
-                {
-                    string result = await response.Content.ReadAsStringAsync();
-                    var formattedJson = JsonConvert.SerializeObject(JsonConvert.DeserializeObject(result), Formatting.Indented);
-                    Console.WriteLine("Response:");
-                    Console.WriteLine(formattedJson);
-                }
-                else
-                {
-                    Console.WriteLine($"Request failed. Status code: {response.StatusCode}");
-                }
+                string result = response.Content.ReadAsStringAsync().Result;
+                formattedJson = JsonConvert.SerializeObject(JsonConvert.DeserializeObject(result), Formatting.Indented);
             }
-            //var client = new HttpClient();
-            //// Set the authorization header
-            //client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue($"\"Bearer\", {token}");
 
-            //// Send the POST request and get the response
-            //HttpResponseMessage response = await client.PostAsync(url, requestContent);
+            return formattedJson;
         }
 
         public class GptMessage
